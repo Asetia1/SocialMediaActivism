@@ -1,0 +1,316 @@
+---
+title: 'Project: Social Media'
+author: "Aanchal Setia"
+date: "2023-01-27"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+#Calling Necessary Libraries
+```{r}
+library(httr)
+library(tm)
+library(stringr)
+library(rtweet)
+library(twitteR)
+library(purrr)
+library(tidytext)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(scales)
+library(broom)
+library(ggplot2)
+library(quanteda)
+library(quanteda.textplots)
+library(stm)
+```
+
+#Getting Twitter Access
+```{r pressure, echo=FALSE}
+
+consumerkey = "******"
+consumersecret = "*****"
+accesstoken = "****"
+accesssecret = "****"
+
+options(httr_oauth_cache = T)
+setup_twitter_oauth(consumer_key = consumerkey, consumer_secret = consumersecret,
+                    access_token = accesstoken, access_secret = accesssecret)
+
+auth_setup_default()
+```
+
+Creating a function to format tweets so that they can be used as data.
+
+```{R}
+formatting_tweets <- function(tweets)
+{
+  #Removing mentions
+  tweets$full_text <-str_remove_all(string = tweets$full_text, pattern = "[@][\\w_-]+" )
+  #Removing hashtags
+  tweets$full_text <-str_remove_all(string = tweets$full_text, pattern = "[#][\\w_-]+" )
+  #Removing Links
+  tweets$full_text <-str_remove_all(string = tweets$full_text, pattern = "http\\S+\\s*" )
+  #Removing Emojis
+  tweets$full_text <- iconv(x = tweets$full_text, from = "latin1", to = "ASCII", sub = "")
+  #Removing Punctuations
+  tweets$full_text <- str_remove_all(string = tweets$full_text, pattern = "[[:punct:]]")
+  #Changing Case to Lower Case
+  tweets$full_text <- str_to_lower(string = tweets$full_text)
+  #Removing Numbers
+  tweets$full_text <- str_remove_all(string = tweets$full_text, pattern = "[:digit:]")
+  #Removing stopwords
+  tweets$full_text <- removeWords(tweets$full_text,c(stopwords("en"), "can", "will"))
+  #Now, I will remove "rt" from the text
+  tweets$full_text <- gsub("^(rt)","",tweets$full_text)
+  tweets$full_text  <-  gsub("amp", "", tweets$full_text) 
+  #Removing Repeated Whitespace
+  tweets$full_text <- str_squish(string = tweets$full_text)
+  #Changing the format of time
+  tweets$created_at <- format(tweets$created_at, format = "%Y")
+  
+  return(tweets)
+}
+```
+
+Scraping Tweets from BLack Lives Matter's Three Chapters
+
+```{r}
+BLMchapters <- c("BLMNYC",  "BLMChi", "BLMLA", "Blklivesmatter")
+
+
+for (i in BLMchapters) {
+  handle <- gsub(" ", "", paste("@", i))
+  result <-  get_timeline(use = handle, n = 10000) 
+  formatted_result <- formatting_tweets(result)
+  
+  df_name <- i
+  assign(df_name, data.frame(formatted_result))
+}
+
+
+
+#Combining all the Tweets into one dataframe
+
+
+Tweets <- rbind(Blklivesmatter, BLMNYC, BLMChi,BLMLA)
+
+#Checking the time frame of Tweets
+table(Tweets$created_at)
+
+load("~/Documents/R/Tweets.RData")
+
+Preeevent <- subset(Tweets, Tweets$created_at <2020)
+Postevent <- subset(Tweets, Tweets$created_at >2019)
+```
+
+Now, I have 4311 Tweets before George Floyd's movement; 7794 Tweets after 
+George Floyd's movement
+
+#Creating Wordclouds for both Pre and Post George Floyd's movement
+
+```{r}
+Tweets_wordcloud <- tokens(Preeevent$full_text, remove_punct = TRUE) %>% 
+  dfm()
+textplot_wordcloud(Tweets_wordcloud)
+
+
+PostTweets_wordcloud <- tokens(Postevent$full_text, remove_punct = TRUE) %>% 
+  dfm()
+textplot_wordcloud(PostTweets_wordcloud)
+
+```
+
+Analsyis of Bigrams: Here we find the words that are preceded by negations such
+"not" and see the extent to which they will influence the sentiment analysis.
+We also see the association of words within the text.
+```{r}
+Preevent_clean <-Preeevent %>%
+  dplyr::select(full_text) %>%
+  unnest_tokens(word,full_text) 
+
+library(dplyr)
+library(tidytext)
+
+pre_bigrams <- Tweets %>% unnest_tokens(bigram, full_text, token = "ngrams", n = 2) %>%
+  filter(!is.na(bigram))
+pre_bigrams %>% 
+  count(bigram, sort = TRUE)
+
+library(tidyr)
+
+bigrams_separated <- pre_bigrams %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+bigrams_filtered <- bigrams_separated %>%
+  filter(!word1 %in% stop_words$word) %>%
+  filter(!word2 %in% stop_words$word)
+
+# new bigram counts:
+bigram_counts <- bigrams_filtered %>% 
+  count(word1, word2, sort = TRUE)
+
+bigrams_united <- bigrams_filtered %>%
+  unite(bigram, word1, word2, sep = " ")
+
+
+bigrams_filtered <- bigrams_filtered %>%
+  filter(word2 == "no") %>%
+  count( word1, sort = TRUE)
+
+
+bigrams_separated <- bigrams_separated %>%
+  filter(word1 == "no") %>%
+  count(word1, word2,sort = TRUE)
+
+AFINN <- get_sentiments("afinn")
+
+not_words <- bigrams_separated %>%
+  filter(word1 == "no") %>%
+  inner_join(AFINN, by = c(word2 = "word")) %>%
+  count(word2, value, sort = TRUE)
+library(ggplot2)
+
+not_words %>%
+  mutate(contribution = n * value) %>%
+  arrange(desc(abs(contribution))) %>%
+  head(20) %>%
+  mutate(word2 = reorder(word2, contribution)) %>%
+  ggplot(aes(n * value, word2, fill = n * value > 0)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = "Sentiment value * number of occurrences",
+       y = "Words preceded by \"not\"")
+
+negation_words <- c("not", "no", "never", "without")
+
+negated_words <- bigrams_separated %>%
+  filter(word1 %in% negation_words) %>%
+  inner_join(AFINN, by = c(word2 = "word")) %>%
+  count(word1, word2, value, sort = TRUE)
+
+negated_words
+
+library(igraph)
+
+bigram_counts
+bigram_graph <- bigram_counts %>%
+  filter(n > 60) %>%
+  graph_from_data_frame()
+
+library(ggraph)
+set.seed(2017)
+
+ggraph(bigram_graph, layout = "fr") +
+  geom_edge_link() +
+  geom_node_point() +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1)
+
+set.seed(2020)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(bigram_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()
+
+
+```
+
+Running Sentiment analysis using multiple dictionaries
+
+```{r}
+library(syuzhet)
+library(plotly)
+library(tm)
+library(wordcloud)
+syuzhet <- as.data.frame(get_sentiment(Tweets$full_text, method="syuzhet"))
+names(syuzhet) <- "Syuzhet"
+bing <- as.data.frame(get_sentiment(Tweets$full_text, method="bing"))
+names(bing) <- "Bing"
+afinn <- as.data.frame(get_sentiment(Tweets$full_text, method="afinn"))
+names(afinn) <- "Afinn"
+nrc <- (get_sentiment(Tweets$full_text, method="nrc"))
+nrc <- as.data.frame(nrc)
+names(nrc) <- "NRC"
+sentiments <- cbind(syuzhet, bing, afinn, nrc, Tweets$created_at)
+
+
+plot_ly(sentiments, x=~Tweets$created_at, y=~Syuzhet, type="scatter", mode="jitter", 
+        name="Syuzhet") %>%
+add_trace(y=~Bing, mode="lines", name="Bing") %>%
+add_trace(y=~Afinn, mode="lines", name="Afinn") %>%
+add_trace(y=~NRC, mode="lines", name="NRC") %>%
+layout(title="Sentiments",
+yaxis=list(title="ScoreS"), xaxis=list(title="Dates"))
+
+```
+Topic Modelling Analysis
+
+Analytical Plan:
+Dictionary-based sentiment analysis doesn't take context of words in account.
+A word can have different meanings based on the context; however, sentiment
+analysis cannot account for this factor. I want to try an unsupervised
+approach on my text to see what topics emerge from the data itself. I will use
+topic modelling on all my tweets, and I will also use topic modelling pre and
+post Floyd to see if there are any differences in the content between these
+two time points
+
+```{r}
+#Converting my data into document feature matrix
+myDfm <- dfm(tokens(Tweets$full_text),
+
+tolower = TRUE,
+remove = stopwords("en"),
+remove_punct = TRUE)
+
+#Assigning k as 4 (because of high coherence with this value)
+# STM
+k = 4
+
+#Strutcural Topic Modelling
+myModel <- stm(myDfm,
+K = k,
+data = Tweets,
+max.em.its = 1000,
+seed = 1234,
+init.type = "Spectral")
+
+#Labelling my Topics
+labelTopics(myModel)
+
+myTopicNames <- labelTopics(myModel, n=4)$frex
+# set up an empty vector
+myTopicLabels <- rep(NA, k)
+# set up a loop to go through the topics and collapse the words to a single name
+for (i in 1:k){
+myTopicLabels[i] <- paste(myTopicNames[i,], collapse = "_")
+}
+# print the names
+
+plot(myModel, type = "summary")
+```
+
+```{r}
+
+cloud(myModel, 1)
+cloud(myModel, 2)
+cloud(myModel, 3)
+cloud(myModel, 4)
+```
+
+Conclusion:
+Four topic have emerged through topic modelling. The first topic refers to
+words prompts for action; associated words: get, call, vote, make, petition
+The second topic refers to s appreciation for BLM leadership; associated words:
+thank, love, leadership. The third topic refers violence by police;
+associated words: killed, justice, cops, violence.The fourth topic refers to
+donations by people; associated words: millions, money, budget
